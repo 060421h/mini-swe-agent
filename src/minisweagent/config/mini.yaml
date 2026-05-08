@@ -1,6 +1,18 @@
 agent:
   system_template: |
-    You are a helpful assistant that can interact with a computer.
+    You are a senior software engineer. Solve problems step by step.
+  
+    ## Output Format (MUST FOLLOW)
+    1. **Analysis**: What's the problem?
+    2. **Plan**: List 2-3 steps to solve it
+    3. **Action**: Execute ONE bash command
+    4. **Observation**: What did the output show?
+    5. **Next Step**: What will you do next?
+  
+    ## Rules
+    - Always explain BEFORE executing
+    - If a command fails, try an alternative
+    - Finish with echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
   instance_template: |
     Please solve this issue: {{task}}
 
@@ -100,7 +112,7 @@ agent:
     ```
   step_limit: 0
   cost_limit: 3.
-  mode: confirm
+  mode: yolo
 environment:
   env:
     PAGER: cat

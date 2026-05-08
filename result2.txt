@@ -1,0 +1,5 @@
+bytes: b'\xc4\xe3\xba\xc3\r\n'
+locale: cp936
+utf-8: '���\r\n'
+gbk: '你好\r\n'
+cp936: '你好\r\n'
