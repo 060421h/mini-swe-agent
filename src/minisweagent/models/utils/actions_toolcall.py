@@ -26,6 +26,27 @@ BASH_TOOL = {
     },
 }
 
+LIST_DIR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_directory",
+        "description": "List contents of a directory with file sizes and modification times",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path (default: current directory)"
+                },
+                "show_hidden": {
+                    "type": "boolean",
+                    "description": "Show hidden files (starting with .)"
+                }
+            }
+        }
+    }
+}
+
 
 def parse_toolcall_actions(tool_calls: list, *, format_error_template: str) -> list[dict]:
     """Parse tool calls from the response. Raises FormatError if unknown tool or invalid args."""
@@ -41,6 +62,7 @@ def parse_toolcall_actions(tool_calls: list, *, format_error_template: str) -> l
             }
         )
     actions = []
+    tools = {tool["function"]["name"]: tool for tool in [BASH_TOOL, LIST_DIR_TOOL]}
     for tool_call in tool_calls:
         error_msg = ""
         args = {}
@@ -48,10 +70,30 @@ def parse_toolcall_actions(tool_calls: list, *, format_error_template: str) -> l
             args = json.loads(tool_call.function.arguments)
         except Exception as e:
             error_msg = f"Error parsing tool call arguments: {e}."
-        if tool_call.function.name != "bash":
-            error_msg += f"Unknown tool '{tool_call.function.name}'."
-        if not isinstance(args, dict) or "command" not in args:
-            error_msg += "Missing 'command' argument in bash tool call."
+        
+        tool_name = tool_call.function.name
+        
+        # 检查工具是否存在
+        if tool_name not in tools:
+            error_msg += f"Unknown tool '{tool_name}'. Available tools: {list(tools.keys())}"
+            raise FormatError(
+                {
+                    "role": "user",
+                    "content": Template(format_error_template, undefined=StrictUndefined).render(
+                        actions=[], error=error_msg.strip()
+                    ),
+                    "extra": {"interrupt_type": "FormatError"},
+                }
+            )
+        
+        # 验证参数（根据不同工具）
+        if tool_name == "bash":
+            if not isinstance(args, dict) or "command" not in args:
+                error_msg += "Missing 'command' argument in bash tool call."
+        elif tool_name == "list_directory":
+            # list_directory 的参数是可选的，所以即使为空也没问题
+            pass  # 可选参数，不需要强制验证
+
         if error_msg:
             raise FormatError(
                 {
@@ -62,7 +104,15 @@ def parse_toolcall_actions(tool_calls: list, *, format_error_template: str) -> l
                     "extra": {"interrupt_type": "FormatError"},
                 }
             )
-        actions.append({"command": args["command"], "tool_call_id": tool_call.id})
+        
+        # 添加到 actions（保留原始参数）
+        actions.append({
+            "command": args.get("command", ""),  # bash 用
+            "tool_name": tool_name,
+            "tool_args": args,
+            "tool_call_id": tool_call.id
+        })
+
     return actions
 
 

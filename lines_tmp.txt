@@ -22,21 +22,7 @@ class LocalEnvironment:
 
     def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
         """Execute a command in the local environment and return the result as a dict."""
-        tool_name = action.get("tool_name", "bash")
-
-        if tool_name == "list_directory":
-            args = action.get("tool_args", {})
-            path = args.get("path", ".")
-            show_hidden = args.get("show_hidden", False)
-            target_path = os.path.abspath(os.path.join(cwd or self.config.cwd or os.getcwd(), path))
-            if platform.system() == "Windows":
-                flags = "/a" if show_hidden else ""
-                command = f'dir {flags} "{target_path}"'
-            else:
-                flags = "-la" if show_hidden else "-lh"
-                command = f'ls {flags} "{target_path}"'
-        else:
-            command = action.get("command", "")
+        command = action.get("command", "")
         cwd = cwd or self.config.cwd or os.getcwd()
         try:
             result = subprocess.run(
