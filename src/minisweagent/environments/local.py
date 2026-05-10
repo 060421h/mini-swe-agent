@@ -4,6 +4,10 @@ import subprocess
 from typing import Any
 import re
 from pathlib import Path
+import time
+import json
+from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -18,11 +22,15 @@ class LocalEnvironmentConfig(BaseModel):
     # 新增安全配置
     enable_security: bool = True  # 是否启用安全限制
     blocked_commands: list[str] = []  # 自定义黑名单
+    #新增日志配置
+    enable_logging: bool = True  # 是否启用日志记录
+    log_dir: str = "logs"  # 日志目录
 
 class LocalEnvironment:
     def __init__(self, *, config_class: type = LocalEnvironmentConfig, **kwargs):
         """This class executes bash commands directly on the local machine."""
         self.config = config_class(**kwargs)
+        
         # ========== 命令安全黑名单 ==========
         self.default_blocked_patterns = [
             # 危险删除命令
@@ -58,88 +66,33 @@ class LocalEnvironment:
             r"killall\s+.*",           # 杀死所有进程
         ]
 
-    def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
-        """Execute a command in the local environment and return the result as a dict."""
-        tool_name = action.get("tool_name", "bash")
+        # ========== 日志系统初始化 ==========
+        self.session_id = datetime.now().strftime("%Y%m%d%H%M%S")
+        self.command_count = 0
+        if self.config.enable_logging:
+            log_path = Path(self.config.log_dir)
+            log_path.mkdir(exist_ok=True)
+            self.log_file = log_path / f"session{self.session_id}.jsonl"
 
-        if tool_name == "list_directory":
-            args = action.get("tool_args", {})
-            path = args.get("path", ".")
-            show_hidden = args.get("show_hidden", False)
-            target_path = os.path.abspath(os.path.join(cwd or self.config.cwd or os.getcwd(), path))
-            if platform.system() == "Windows":
-                flags = "/a" if show_hidden else ""
-                command = f'dir {flags} "{target_path}"'
-            else:
-                flags = "-la" if show_hidden else "-lh"
-                command = f'ls {flags} "{target_path}"'
-        else:
-            command = action.get("command", "")
-
-        # ========== 安全检查 ==========
-        is_safe, reason = self._is_safe_command(command)
-        if not is_safe:
-            return {
-                "output": f"[SECURITY BLOCKED] {reason}\n\n被阻止的命令: {command}",
-                "returncode": 403,  # Forbidden
-                "exception_info": f"Security policy violation: {reason}"
-            }
+    def _log_command(self, command: str, result: dict, execution_time: float):
+        """记录命令执行日志"""
+        if not self.config.enable_logging:
+            return
         
-        cwd = cwd or self.config.cwd or os.getcwd()
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                text=True,
-                cwd=cwd,
-                env=os.environ | self.config.env,
-                timeout=timeout or self.config.timeout,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            output = {"output": result.stdout, "returncode": result.returncode, "exception_info": ""}
-        except Exception as e:
-            raw_output = getattr(e, "output", None)
-            raw_output = (
-                raw_output.decode("utf-8", errors="replace") if isinstance(raw_output, bytes) else (raw_output or "")
-            )
-            output = {
-                "output": raw_output,
-                "returncode": -1,
-                "exception_info": f"An error occurred while executing the command: {e}",
-                "extra": {"exception_type": type(e).__name__, "exception": str(e)},
-            }
-        self._check_finished(output)
-        return output
-
-    def _check_finished(self, output: dict):
-        """Raises Submitted if the output indicates task completion."""
-        lines = output.get("output", "").lstrip().splitlines(keepends=True)
-        if lines and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" and output["returncode"] == 0:
-            submission = "".join(lines[1:])
-            raise Submitted(
-                {
-                    "role": "exit",
-                    "content": submission,
-                    "extra": {"exit_status": "Submitted", "submission": submission},
-                }
-            )
-
-    def get_template_vars(self, **kwargs) -> dict[str, Any]:
-        return recursive_merge(self.config.model_dump(), platform.uname()._asdict(), os.environ, kwargs)
-
-    def serialize(self) -> dict:
-        return {
-            "info": {
-                "config": {
-                    "environment": self.config.model_dump(mode="json"),
-                    "environment_type": f"{self.__class__.__module__}.{self.__class__.__name__}",
-                }
-            }
+        self.command_count += 1
+        log_entry = {
+            "session_id": self.session_id,
+            "seq": self.command_count,
+            "command": command,
+            "returncode": result.get("returncode"),
+            "output_preview": result.get("output", "")[:500],  # 只记录输出的前500字符
+            "execution_time_ms": round(execution_time * 1000, 2),
+            "timestamp": datetime.now().isoformat(),
         }
-    
+
+        with open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
     def _is_safe_command(self, command: str) -> tuple[bool, str]:
         """检查命令是否安全。
         
@@ -180,3 +133,93 @@ class LocalEnvironment:
                 return False, f"危险的命令组合: {combo} 和 {dangerous_cmd_re}"
         
         return True, ""
+
+    def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
+        """Execute a command in the local environment and return the result as a dict."""
+        tool_name = action.get("tool_name", "bash")
+
+        if tool_name == "list_directory":
+            args = action.get("tool_args", {})
+            path = args.get("path", ".")
+            show_hidden = args.get("show_hidden", False)
+            target_path = os.path.abspath(os.path.join(cwd or self.config.cwd or os.getcwd(), path))
+            if platform.system() == "Windows":
+                flags = "/a" if show_hidden else ""
+                command = f'dir {flags} "{target_path}"'
+            else:
+                flags = "-la" if show_hidden else "-lh"
+                command = f'ls {flags} "{target_path}"'
+        else:
+            command = action.get("command", "")
+
+        # ========== 安全检查 ==========
+        is_safe, reason = self._is_safe_command(command)
+        if not is_safe:
+            return {
+                "output": f"[SECURITY BLOCKED] {reason}\n\n被阻止的命令: {command}",
+                "returncode": 403,  # Forbidden
+                "exception_info": f"Security policy violation: {reason}"
+            }
+        
+        #执行命令(计时)
+        cwd = cwd or self.config.cwd or os.getcwd()
+        start_time = time.time()
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                cwd=cwd,
+                env=os.environ | self.config.env,
+                timeout=timeout or self.config.timeout,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            output = {"output": result.stdout, "returncode": result.returncode, "exception_info": ""}
+        except Exception as e:
+            raw_output = getattr(e, "output", None)
+            raw_output = (
+                raw_output.decode("utf-8", errors="replace") if isinstance(raw_output, bytes) else (raw_output or "")
+            )
+            output = {
+                "output": raw_output,
+                "returncode": -1,
+                "exception_info": f"An error occurred while executing the command: {e}",
+                "extra": {"exception_type": type(e).__name__, "exception": str(e)},
+            }
+        
+        # 记录日志
+        execution_time = time.time() - start_time
+        self._log_command(command, output, execution_time)
+
+        self._check_finished(output)
+        return output
+
+    def _check_finished(self, output: dict):
+        """Raises Submitted if the output indicates task completion."""
+        lines = output.get("output", "").lstrip().splitlines(keepends=True)
+        if lines and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" and output["returncode"] == 0:
+            submission = "".join(lines[1:])
+            raise Submitted(
+                {
+                    "role": "exit",
+                    "content": submission,
+                    "extra": {"exit_status": "Submitted", "submission": submission},
+                }
+            )
+
+    def get_template_vars(self, **kwargs) -> dict[str, Any]:
+        return recursive_merge(self.config.model_dump(), platform.uname()._asdict(), os.environ, kwargs)
+
+    def serialize(self) -> dict:
+        return {
+            "info": {
+                "config": {
+                    "environment": self.config.model_dump(mode="json"),
+                    "environment_type": f"{self.__class__.__module__}.{self.__class__.__name__}",
+                }
+            }
+        }
